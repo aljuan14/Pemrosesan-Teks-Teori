@@ -3,97 +3,115 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import SVC
 from sklearn.model_selection import cross_val_score, train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 
-# --- KONFIGURASI ---
-FILE_MANUAL = 'data_manual.csv'
+# --- KONFIGURASI FILE ---
+# Pastikan nama file ini sesuai dengan yang ada di folder kamu
+FILE_MANUAL = 'dataset_labeling_ai.csv'
 FILE_FULL_RAW = 'analisis_sentimen_bersih.csv'
-OUTPUT_FILE = 'analisis_sentimen_full_labeled.csv'
+OUTPUT_FILE = 'dataset_self_train_ai.csv'
 
 
-def train_and_predict():
-    print("=== PROGRAM AUTO-LABELING DENGAN SVM ===")
+def train_and_predict_pro():
+    print("=== PROGRAM AUTO-LABELING PRO (ANTI-BIAS) ===")
 
     # 1. Load Data
     try:
-        df_labeled = pd.read_csv(FILE_MANUAL)
-        df_full = pd.read_csv(FILE_FULL_RAW)
+        df_train = pd.read_csv(FILE_MANUAL)
+        df_raw = pd.read_csv(FILE_FULL_RAW)
+        print(f"[OK] Data Training Loaded: {len(df_train)} baris")
+        print(f"[OK] Data Raw Loaded: {len(df_raw)} baris")
     except FileNotFoundError as e:
         print(f"Error: {e}")
         return
 
-    print(f"Data Training (Manual): {len(df_labeled)} baris")
-
     # 2. Preprocessing & Vectorization
-    # Menggunakan TF-IDF dengan n-gram (1,2) agar frasa seperti "tidak suka" tertangkap satu kesatuan
+    print("\n[Proses] Melakukan Vektorisasi Teks...")
+    # ngram_range=(1,2) menangkap konteks frasa (misal: "tidak bagus")
     tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
 
-    # Fit pada data yang sudah ada labelnya
-    X = df_labeled['final_text'].fillna('')
-    y = df_labeled['label']
+    # Fit pada data training manual
+    X_train_text = df_train['final_text'].fillna('')
+    y_train = df_train['label']
 
-    X_vectorized = tfidf.fit_transform(X)
+    X_train_vec = tfidf.fit_transform(X_train_text)
 
-    # 3. Training Model SVM
-    # Kernel 'linear' adalah standar emas untuk klasifikasi teks
-    model = SVC(kernel='linear', probability=True, random_state=42)
+    # 3. Evaluasi Model (Untuk Laporan Bab 4)
+    print("\n[Evaluasi] Mengecek Performa Model...")
+    # Split 80:20 untuk tes internal
+    X_tr, X_ts, y_tr, y_ts = train_test_split(
+        X_train_vec, y_train, test_size=0.2, random_state=42, stratify=y_train)
 
-    # Cek Validasi (Cross Validation 5-fold)
-    # Ini memberi gambaran akurasi modelmu saat ini
-    scores = cross_val_score(model, X_vectorized, y, cv=5)
-    print(f"\nEstimasi Akurasi Model: {scores.mean()*100:.2f}%")
+    model_eval = SVC(kernel='linear', probability=True, random_state=42)
+    model_eval.fit(X_tr, y_tr)
+    y_pred_eval = model_eval.predict(X_ts)
 
-    # Train pada SELURUH data manual
-    model.fit(X_vectorized, y)
-    print("Model berhasil dilatih!")
+    # Tampilkan Metrik Keren
+    acc = accuracy_score(y_ts, y_pred_eval)
+    print(f"\n>> AKURASI MODEL: {acc*100:.2f}%")
+    print("-" * 60)
+    print(classification_report(y_ts, y_pred_eval))
+    print("-" * 60)
+    print("Confusion Matrix (Tabel Kebenaran):")
+    print(confusion_matrix(y_ts, y_pred_eval,
+          labels=['positif', 'negatif', 'netral']))
+    print("-" * 60)
 
-    # 4. Prediksi Sisa Data (Unlabeled)
-    # Kita harus memisahkan mana yang sudah dilabel manual, mana yang belum
-    # Membuat unique key untuk membedakan baris (text + subjek)
-    df_labeled['temp_key'] = df_labeled['final_text'] + df_labeled['subjek']
-    df_full['temp_key'] = df_full['final_text'] + df_full['subjek']
+    # 4. Training Full Model
+    print("\n[Training] Melatih model final dengan 100% data manual...")
+    model_final = SVC(kernel='linear', probability=True, random_state=42)
+    model_final.fit(X_train_vec, y_train)
 
-    # Filter: Ambil data di df_full yang KEY-nya TIDAK ada di df_labeled
-    labeled_keys = set(df_labeled['temp_key'])
-    df_unlabeled = df_full[~df_full['temp_key'].isin(labeled_keys)].copy()
+    # 5. Anti-Data Leakage (Pemisahan Data)
+    print("[Filter] Memisahkan data yang belum dilabeli...")
 
-    print(f"Sisa data yang akan dilabeli otomatis: {len(df_unlabeled)} baris")
+    # Buat kunci unik (Text + Subjek)
+    df_train['key'] = df_train['final_text'] + df_train['subjek']
+    df_raw['key'] = df_raw['final_text'] + df_raw['subjek']
 
+    # Ambil hanya data di RAW yang kuncinya TIDAK ADA di TRAINING
+    labeled_keys = set(df_train['key'])
+    df_unlabeled = df_raw[~df_raw['key'].isin(labeled_keys)].copy()
+
+    print(f">> Data Sisa (Unlabeled): {len(df_unlabeled)} baris")
+
+    # 6. Prediksi Sisa Data
     if len(df_unlabeled) > 0:
-        # Transform data baru menggunakan TF-IDF yang sdh dilatih (JANGAN di-fit ulang)
+        print("[Prediksi] Sedang melabeli data sisa...")
         X_unlabeled = tfidf.transform(df_unlabeled['final_text'].fillna(''))
 
-        # Prediksi Label
-        predictions = model.predict(X_unlabeled)
+        # Prediksi Label & Confidence Score
+        preds = model_final.predict(X_unlabeled)
+        probs = model_final.predict_proba(X_unlabeled)
+        # Ambil nilai probabilitas tertinggi
+        confidence = np.max(probs, axis=1)
 
-        # Masukkan hasil prediksi
-        df_unlabeled['label'] = predictions
+        df_unlabeled['label'] = preds
         df_unlabeled['status'] = 'prediksi_model'
+        # Fitur baru: seberapa yakin si model?
+        df_unlabeled['confidence'] = confidence
+    else:
+        print("Semua data sudah terlabeli di file manual!")
 
-    # Beri tanda pada data manual
-    df_labeled['status'] = 'manual'
+    # 7. Gabungkan & Simpan
+    df_train['status'] = 'manual'
+    df_train['confidence'] = 1.0  # Manual pasti yakin 100%
 
-    # 5. Gabungkan dan Simpan
-    cols_to_keep = ['subjek', 'final_text', 'label', 'status']
+    cols_to_keep = ['subjek', 'final_text', 'label', 'status', 'confidence']
     df_final = pd.concat(
-        [df_labeled[cols_to_keep], df_unlabeled[cols_to_keep]], ignore_index=True)
+        [df_train[cols_to_keep], df_unlabeled[cols_to_keep]], ignore_index=True)
 
     df_final.to_csv(OUTPUT_FILE, index=False)
-    print(f"\nSUKSES! Data tersimpan di '{OUTPUT_FILE}'")
-    print(f"Total Data Akhir: {len(df_final)}")
-    print("-" * 30)
-    print("Contoh hasil prediksi model:")
-    print(df_unlabeled[['final_text', 'label']].head(5))
 
-    # Optional: Tampilkan laporan klasifikasi detail dari split test kecil
-    print("\n--- Detail Performa Model (pada 20% data test split) ---")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_vectorized, y, test_size=0.2, random_state=42)
-    model_eval = SVC(kernel='linear')
-    model_eval.fit(X_train, y_train)
-    y_pred_eval = model_eval.predict(X_test)
-    print(classification_report(y_test, y_pred_eval))
+    print("\n" + "="*50)
+    print(f"SUKSES! File akhir disimpan: {OUTPUT_FILE}")
+    print(f"Total Data: {len(df_final)}")
+    print("="*50)
+
+    # Intip hasil
+    print("\nContoh Hasil Prediksi (dengan Confidence):")
+    print(df_unlabeled[['final_text', 'label', 'confidence']].head())
 
 
 if __name__ == "__main__":
-    train_and_predict()
+    train_and_predict_pro()
