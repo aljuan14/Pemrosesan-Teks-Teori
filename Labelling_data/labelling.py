@@ -2,170 +2,204 @@ import pandas as pd
 import os
 import sys
 
-# --- KONFIGURASI ---
-INPUT_FILE = 'analisis_sentimen_bersih.csv'
-OUTPUT_FILE = 'hasil_sentimen_labeled_per_tokoh.csv'
+# ==========================================
+# KONFIGURASI (SUDAH DISESUAIKAN)
+# ==========================================
+INPUT_FILE = 'dataset_tugas_purbaya_vs_srimulyani.csv'  # Nama file input
+OUTPUT_FILE = 'hasil_labelling_manual.csv'              # Nama file hasil
+# File untuk menyimpan data yang di-skip
+SKIP_FILE = 'riwayat_skip.csv'
 
-# Target per label UNTUK SETIAP TOKOH
-# Jika target total 100, berarti per tokoh 50.
+# PENTING: Nama kolom disesuaikan dengan dataset kamu
+KOLOM_TEXT = 'text'     # Di CSV kamu kolomnya bernama 'text'
+KOLOM_SUBJEK = 'tokoh'  # Di CSV kamu kolomnya bernama 'tokoh'
+
+# Target hanya sebagai indikator (Boleh lebih/Over quota)
 TARGET_PER_TOKOH = {
     'positif': 50,
     'negatif': 50,
-    'netral': 25
+    'netral': 50
 }
 
-# Mapping input keyboard ke label
+# Mapping input keyboard
 LABEL_MAP = {
     '1': 'positif', 'p': 'positif', 'pos': 'positif',
     '2': 'negatif', 'n': 'negatif', 'neg': 'negatif',
     '3': 'netral', 'e': 'netral', 'net': 'netral'
 }
-# -------------------
+
+# ==========================================
+# FUNGSI BANTUAN
+# ==========================================
 
 
 def clear_screen():
+    # Membersihkan layar terminal (Windows/Mac/Linux)
     os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def main():
-    print("=== PROGRAM PELABELAN NLP: STRATIFIED SAMPLING (PER TOKOH) ===")
-
-    # 1. Load Data
+def load_data(filepath):
+    """Membaca CSV dengan handling encoding otomatis"""
     try:
-        df_source = pd.read_csv(INPUT_FILE)
-    except FileNotFoundError:
+        return pd.read_csv(filepath, encoding='utf-8')
+    except UnicodeDecodeError:
+        try:
+            return pd.read_csv(filepath, encoding='latin1')
+        except:
+            return pd.read_csv(filepath, encoding='ISO-8859-1')
+
+
+def main():
+    clear_screen()
+    print("=== PROGRAM PELABELAN: AUTO-RESUME & OVER QUOTA ===")
+
+    # 1. Cek File Input
+    if not os.path.exists(INPUT_FILE):
         print(f"[ERROR] File '{INPUT_FILE}' tidak ditemukan.")
+        print("Pastikan file CSV berada di folder yang sama dengan script ini.")
         return
 
-    # Ambil daftar tokoh unik dari data
-    subjects = df_source['subjek'].unique()
-    print(f"Tokoh ditemukan: {', '.join(subjects)}")
+    df_source = load_data(INPUT_FILE)
 
-    # Acak data di awal
-    df_source = df_source.sample(
-        frac=1, random_state=42).reset_index(drop=True)
+    # Validasi Kolom
+    if KOLOM_TEXT not in df_source.columns or KOLOM_SUBJEK not in df_source.columns:
+        print(f"[ERROR] Nama kolom tidak cocok!")
+        print(f"Dicari di script : '{KOLOM_TEXT}' dan '{KOLOM_SUBJEK}'")
+        print(f"Yang ada di CSV  : {df_source.columns.tolist()}")
+        return
 
-    # 2. Siapkan/Baca File Output
+    # 2. Load File Output (Data yg sudah selesai dilabel)
+    labeled_keys = set()
     if os.path.exists(OUTPUT_FILE):
-        try:
-            df_done = pd.read_csv(OUTPUT_FILE)
-            # Filter data source, buang yang sudah ada di output
-            # Kita pakai kombinasi teks + subjek biar lebih unik
-            df_done['key'] = df_done['final_text'] + df_done['subjek']
-            df_source['key'] = df_source['final_text'] + df_source['subjek']
-
-            labeled_keys = set(df_done['key'].tolist())
-            df_work = df_source[~df_source['key'].isin(
-                labeled_keys)].drop(columns=['key'])
-
-            print(f"Melanjutkan sesi. {len(df_done)} data sudah terlabel.")
-        except Exception as e:
-            print(f"[ERROR] Gagal membaca file output: {e}")
-            return
+        df_done = load_data(OUTPUT_FILE)
+        # Kunci unik = Text + Tokoh (agar tidak duplikat)
+        labeled_keys = set((df_done[KOLOM_TEXT].astype(
+            str) + df_done[KOLOM_SUBJEK].astype(str)).tolist())
+        print(f"> Data Sudah Terlabel : {len(df_done)}")
     else:
-        # File baru
-        pd.DataFrame(columns=['subjek', 'final_text', 'label']).to_csv(
+        # Buat file output baru
+        pd.DataFrame(columns=[KOLOM_SUBJEK, KOLOM_TEXT, 'label']).to_csv(
             OUTPUT_FILE, index=False)
-        df_done = pd.DataFrame(columns=['subjek', 'final_text', 'label'])
-        df_work = df_source.copy()
-        print("Memulai sesi baru.")
+        df_done = pd.DataFrame(columns=[KOLOM_SUBJEK, KOLOM_TEXT, 'label'])
+        print("> Data Sudah Terlabel : 0 (Mulai Baru)")
 
-    # 3. Hitung Progress Saat Ini Per Tokoh
-    # Struktur: counts[nama_tokoh][label] = jumlah
+    # 3. Load File Skip (Data yg pernah di-skip user agar tidak muncul lagi)
+    skipped_keys = set()
+    if os.path.exists(SKIP_FILE):
+        df_skip = load_data(SKIP_FILE)
+        skipped_keys = set((df_skip[KOLOM_TEXT].astype(
+            str) + df_skip[KOLOM_SUBJEK].astype(str)).tolist())
+        print(f"> Data Pernah Di-Skip : {len(df_skip)}")
+    else:
+        pd.DataFrame(columns=[KOLOM_SUBJEK, KOLOM_TEXT]
+                     ).to_csv(SKIP_FILE, index=False)
+        print("> Data Pernah Di-Skip : 0")
+
+    # 4. Filter Data Source
+    # Buang data yang sudah ada di Output ATAU di Skip
+    df_source['key'] = df_source[KOLOM_TEXT].astype(
+        str) + df_source[KOLOM_SUBJEK].astype(str)
+
+    exclude_keys = labeled_keys.union(skipped_keys)
+    df_work = df_source[~df_source['key'].isin(
+        exclude_keys)].drop(columns=['key'])
+
+    # Acak urutan (Random State 42 agar urutan konsisten saat dilanjutkan)
+    df_work = df_work.sample(frac=1, random_state=42).reset_index(drop=True)
+
+    # Hitung progress statistik saat ini
+    subjects = df_source[KOLOM_SUBJEK].unique()
     counts = {s: {'positif': 0, 'negatif': 0, 'netral': 0} for s in subjects}
 
     if len(df_done) > 0:
-        # Groupby subjek dan label untuk hitung jumlah
-        progress = df_done.groupby(['subjek', 'label']).size()
+        # Hitung jumlah label per tokoh
+        progress = df_done.groupby([KOLOM_SUBJEK, 'label']).size()
         for s in subjects:
             for l in ['positif', 'negatif', 'netral']:
                 if (s, l) in progress.index:
                     counts[s][l] = progress[(s, l)]
 
-    # 4. Loop Pelabelan
+    print(f"\nSisa antrian data: {len(df_work)} baris.")
+    input("Tekan Enter untuk MELANJUTKAN sesi terakhir...")
+
+    # 5. Loop Pelabelan Utama
     for index, row in df_work.iterrows():
-        subjek = row['subjek']
-        text = row['final_text']
+        clear_screen()
+        subjek = row[KOLOM_SUBJEK]
+        text = row[KOLOM_TEXT]
 
-        # Cek apakah TOKOH ini sudah memenuhi SEMUA kuota?
-        is_subject_full = all(
-            counts[subjek][l] >= TARGET_PER_TOKOH[l] for l in TARGET_PER_TOKOH)
-
-        # Jika subjek ini sudah full semua kuotanya, otomatis skip tanpa tanya user
-        if is_subject_full:
-            continue
-
-        # Cek apakah SEMUA tokoh sudah full? (Exit condition)
-        all_full = True
-        for s in subjects:
-            if not all(counts[s][l] >= TARGET_PER_TOKOH[l] for l in TARGET_PER_TOKOH):
-                all_full = False
-                break
-
-        if all_full:
-            print("\n" + "="*50)
-            print("SELAMAT! Semua target kuota untuk SEMUA tokoh sudah terpenuhi!")
-            print("="*50)
-            break
-
-        # Tampilkan Status
-        print("\n" + "="*60)
-        print(f"STATUS KUOTA UNTUK: {subjek.upper()}")
-        status_str = " | ".join(
-            [f"{l.upper()}: {counts[subjek][l]}/{TARGET_PER_TOKOH[l]}" for l in TARGET_PER_TOKOH])
-        print(f"[ {status_str} ]")
-
-        # Tampilkan Status Tokoh Lain (sebagai info saja)
-        other_subjects = [s for s in subjects if s != subjek]
-        if other_subjects:
-            print("-" * 20)
-            for os_name in other_subjects:
-                os_str = " | ".join(
-                    [f"{l[0].upper()}:{counts[os_name][l]}" for l in TARGET_PER_TOKOH])
-                print(f"Info {os_name}: {os_str}")
-        print("="*60)
-
-        print(f"TEKS:\n\"{text}\"")
+        # --- TAMPILAN STATUS ---
+        print(f"TOKOH: {str(subjek).upper()}")
         print("-" * 60)
 
-        # Input Loop
+        status_parts = []
+        for l in ['positif', 'negatif', 'netral']:
+            curr = counts[subjek][l]
+            tgt = TARGET_PER_TOKOH[l]
+
+            # Indikator jika sudah memenuhi/melebihi target
+            if curr >= tgt:
+                surplus = curr - tgt
+                # Info surplus
+                status_str = f"{l.upper()}: {curr}/{tgt} (+{surplus})"
+            else:
+                status_str = f"{l.upper()}: {curr}/{tgt}"
+
+            status_parts.append(status_str)
+
+        print(" | ".join(status_parts))
+        print("="*60)
+        # Menampilkan teks
+        print(f"TEKS:\n\n\"{text}\"\n")
+        print("="*60)
+
+        print(
+            "CONTROLS: [p]=Positif | [n]=Negatif | [e]=Netral | [s]=Skip | [q]=Quit")
+
+        # --- INPUT LOOP ---
         valid_input = False
         while not valid_input:
-            prompt = f"Label untuk {subjek} (p/n/e) [s=Skip, q=Quit]: "
-            user_input = input(prompt).lower().strip()
+            user_input = input("Label > ").lower().strip()
 
+            # Opsi QUIT (Keluar tanpa simpan current data, agar muncul lagi nanti)
             if user_input in ['q', 'quit', 'exit']:
                 print("Keluar...")
                 sys.exit()
 
+            # Opsi SKIP (Simpan ke file skip, tidak akan muncul lagi)
             if user_input in ['s', 'skip']:
-                print(">> Skip.")
+                new_skip = pd.DataFrame({
+                    KOLOM_SUBJEK: [subjek],
+                    KOLOM_TEXT: [text]
+                })
+                # Simpan mode append
+                new_skip.to_csv(SKIP_FILE, mode='a', header=False, index=False)
+
+                print(">> Di-Skip (Disimpan ke riwayat skip).")
                 valid_input = True
                 continue
 
+            # Opsi LABEL (Simpan ke hasil)
             if user_input in LABEL_MAP:
                 label = LABEL_MAP[user_input]
 
-                # Cek kuota spesifik
-                if counts[subjek][label] >= TARGET_PER_TOKOH[label]:
-                    print(
-                        f"!! Kuota {label.upper()} untuk {subjek} SUDAH PENUH ({TARGET_PER_TOKOH[label]}). Pilih label lain atau Skip.")
-                    continue
-                else:
-                    # Save
-                    new_row = pd.DataFrame(
-                        {'subjek': [subjek], 'final_text': [text], 'label': [label]})
-                    new_row.to_csv(OUTPUT_FILE, mode='a',
-                                   header=False, index=False)
+                new_row = pd.DataFrame({
+                    KOLOM_SUBJEK: [subjek],
+                    KOLOM_TEXT: [text],
+                    'label': [label]
+                })
+                # Simpan mode append
+                new_row.to_csv(OUTPUT_FILE, mode='a',
+                               header=False, index=False)
 
-                    counts[subjek][label] += 1
-                    print(f">> Disimpan: {subjek} -> {label}")
-                    valid_input = True
+                counts[subjek][label] += 1
+
+                print(f">> Disimpan: {subjek} -> {label}")
+                valid_input = True
             else:
-                print("!! Input salah. Gunakan p (positif), n (negatif), e (netral).")
+                print("!! Input salah. Gunakan p, n, e, s, atau q.")
 
-    if len(df_work) == 0:
-        print("Data sumber habis!")
+    print("Data sumber habis! (Semua data telah dilabeli atau di-skip)")
 
 
 if __name__ == "__main__":
