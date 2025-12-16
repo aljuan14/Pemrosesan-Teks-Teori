@@ -1,4 +1,4 @@
-Analisis Komparatif Sentimen Publik: 30 Hari Pertama Kerja Purbaya Yudhi Sadewa vs. Sri Mulyani Indrawati
+Analisis Sentimen Komparatif Terhadap Kebijakan Fiskal: Era Baru Purbaya Yudhi Sadewa vs. Legacy Sri Mulyani Indrawati
 
 Project ini disusun untuk memenuhi tugas mata kuliah **Pemrosesan Teks**, mencakup implementasi **CPMK 2 (Data Acquisition & Preprocessing)** dan **CPMK 3 (Sentiment Analysis Modeling)**.
 
